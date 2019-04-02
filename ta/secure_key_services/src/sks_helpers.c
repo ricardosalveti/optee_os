@@ -603,8 +603,6 @@ bool sks2tee_load_attr(TEE_Attribute *tee_ref, uint32_t tee_id,
 	switch (tee_id) {
 	case TEE_ATTR_ECC_PUBLIC_VALUE_X:
 	case TEE_ATTR_ECC_PUBLIC_VALUE_Y:
-		// FIXME: workaround until we get parse DER data
-		break;
 	case TEE_ATTR_ECC_CURVE:
 		if (get_attribute_ptr(obj->attributes, SKS_CKA_EC_PARAMS,
 					&a_ptr, &a_size)) {
@@ -612,9 +610,34 @@ bool sks2tee_load_attr(TEE_Attribute *tee_ref, uint32_t tee_id,
 			return false;
 		}
 
-		data32 = ec_params2tee_curve(a_ptr, a_size);
+		if (tee_id == TEE_ATTR_ECC_CURVE) {
+			data32 = ec_params2tee_curve(a_ptr, a_size);
+			TEE_InitValueAttribute(tee_ref, TEE_ATTR_ECC_CURVE,
+					data32, 0);
+			return true;
+		}
 
-		TEE_InitValueAttribute(tee_ref, TEE_ATTR_ECC_CURVE, data32, 0);
+		data32 = (ec_params2tee_keysize(a_ptr, a_size) + 7) / 8;
+		if (get_attribute_ptr(obj->attributes, SKS_CKA_EC_POINT,
+					&a_ptr, &a_size)) {
+			EMSG("Missing EC_POINT attribute");
+			return false;
+		}
+		if (((char *)a_ptr)[0] != 0x04) {
+			EMSG("Unsupported EC_POINT form");
+			return false;
+		}
+		if (a_size != 2 * data32 + 1) {
+			EMSG("Invalid EC_POINT attribute");
+			return false;
+		}
+		if (tee_id == TEE_ATTR_ECC_PUBLIC_VALUE_X) {
+			TEE_InitRefAttribute(tee_ref, tee_id,
+					(uint8_t *)a_ptr + 1, data32);
+		} else {
+			TEE_InitRefAttribute(tee_ref, tee_id,
+					(uint8_t *)a_ptr + 1 + data32, data32);
+		}
 		return true;
 
 	default:
