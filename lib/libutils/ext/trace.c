@@ -96,6 +96,14 @@ void trace_printf(const char *function, int line, int level, bool level_ok,
 		  const char *fmt, ...)
 {
 	va_list ap;
+
+	va_start(ap, fmt);
+	trace_vprintf(function, line, level, level_ok, fmt, ap);
+	va_end(ap);
+}
+void trace_vprintf(const char *function, int line, int level, bool level_ok,
+		   const char *fmt, va_list ap)
+{
 	char buf[MAX_PRINT_SIZE];
 	size_t boffs = 0;
 	int res;
@@ -145,9 +153,7 @@ void trace_printf(const char *function, int line, int level, bool level_ok,
 		buf[boffs] = 0;
 	}
 
-	va_start(ap, fmt);
 	res = vsnprintk(buf + boffs, sizeof(buf) - boffs, fmt, ap);
-	va_end(ap);
 	if (res > 0)
 		boffs += res;
 
@@ -217,8 +223,6 @@ static int __printf(2, 3) append(struct strbuf *sbuf, const char *fmt, ...)
 	sbuf->ptr += MIN(left, len);
 	return 1;
 }
-
-#define PRIxVA_WIDTH ((int)(sizeof(vaddr_t)*2))
 
 void dhex_dump(const char *function, int line, int level,
 	       const void *buf, int len)

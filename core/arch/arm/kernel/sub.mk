@@ -5,8 +5,6 @@ srcs-$(CFG_EARLY_TA) += early_ta.c
 srcs-$(CFG_SECSTOR_TA) += secstor_ta.c
 endif
 srcs-y += pseudo_ta.c
-srcs-y += elf_load.c
-srcs-$(CFG_TA_DYNLINK) += elf_load_dyn.c
 srcs-y += tee_time.c
 srcs-y += otp_stubs.c
 srcs-y += delay.c
@@ -55,6 +53,8 @@ ifeq ($(CFG_UNWIND),y)
 srcs-y += unwind_arm32.c
 srcs-$(CFG_ARM64_core) += unwind_arm64.c
 endif
+
+srcs-$(CFG_VIRTUALIZATION) += virtualization.c
 
 srcs-y += link_dummies.c
 

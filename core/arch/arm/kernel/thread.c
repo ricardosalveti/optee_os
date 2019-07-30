@@ -8,6 +8,7 @@
 
 #include <arm.h>
 #include <assert.h>
+#include <io.h>
 #include <keep.h>
 #include <kernel/asan.h>
 #include <kernel/lockdep.h>
@@ -18,6 +19,7 @@
 #include <kernel/tee_ta_manager.h>
 #include <kernel/thread_defs.h>
 #include <kernel/thread.h>
+#include <kernel/virtualization.h>
 #include <mm/core_memprot.h>
 #include <mm/mobj.h>
 #include <mm/tee_mm.h>
@@ -71,7 +73,7 @@
 
 struct thread_ctx threads[CFG_NUM_THREADS];
 
-struct thread_core_local thread_core_local[CFG_TEE_CORE_NB_CORE];
+struct thread_core_local thread_core_local[CFG_TEE_CORE_NB_CORE] __nex_bss;
 
 #ifdef CFG_WITH_STACK_CANARIES
 #ifdef ARM32
@@ -118,31 +120,36 @@ const uint32_t stack_tmp_stride = sizeof(stack_tmp[0]);
 KEEP_PAGER(stack_tmp_export);
 KEEP_PAGER(stack_tmp_stride);
 
-thread_smc_handler_t thread_std_smc_handler_ptr;
-static thread_smc_handler_t thread_fast_smc_handler_ptr;
-thread_nintr_handler_t thread_nintr_handler_ptr;
-thread_pm_handler_t thread_cpu_on_handler_ptr;
-thread_pm_handler_t thread_cpu_off_handler_ptr;
-thread_pm_handler_t thread_cpu_suspend_handler_ptr;
-thread_pm_handler_t thread_cpu_resume_handler_ptr;
-thread_pm_handler_t thread_system_off_handler_ptr;
-thread_pm_handler_t thread_system_reset_handler_ptr;
+thread_smc_handler_t thread_std_smc_handler_ptr __nex_bss;
+static thread_smc_handler_t thread_fast_smc_handler_ptr __nex_bss;
+thread_nintr_handler_t thread_nintr_handler_ptr __nex_bss;
+thread_pm_handler_t thread_cpu_on_handler_ptr __nex_bss;
+thread_pm_handler_t thread_cpu_off_handler_ptr __nex_bss;
+thread_pm_handler_t thread_cpu_suspend_handler_ptr __nex_bss;
+thread_pm_handler_t thread_cpu_resume_handler_ptr __nex_bss;
+thread_pm_handler_t thread_system_off_handler_ptr __nex_bss;
+thread_pm_handler_t thread_system_reset_handler_ptr __nex_bss;
 
 #ifdef CFG_CORE_UNMAP_CORE_AT_EL0
-static vaddr_t thread_user_kcode_va;
-long thread_user_kcode_offset;
-static size_t thread_user_kcode_size;
+static vaddr_t thread_user_kcode_va __nex_bss;
+long thread_user_kcode_offset __nex_bss;
+static size_t thread_user_kcode_size __nex_bss;
 #endif
 
 #if defined(CFG_CORE_UNMAP_CORE_AT_EL0) && \
 	defined(CFG_CORE_WORKAROUND_SPECTRE_BP_SEC) && defined(ARM64)
-long thread_user_kdata_sp_offset;
+long thread_user_kdata_sp_offset __nex_bss;
 static uint8_t thread_user_kdata_page[
 	ROUNDUP(sizeof(thread_core_local), SMALL_PAGE_SIZE)]
-	__aligned(SMALL_PAGE_SIZE) __section(".nozi.kdata_page");
+	__aligned(SMALL_PAGE_SIZE)
+#ifndef CFG_VIRTUALIZATION
+	__section(".nozi.kdata_page");
+#else
+	__section(".nex_nozi.kdata_page");
+#endif
 #endif
 
-static unsigned int thread_global_lock = SPINLOCK_UNLOCK;
+static unsigned int thread_global_lock __nex_bss = SPINLOCK_UNLOCK;
 static bool thread_prealloc_rpc_cache;
 
 static unsigned int thread_rpc_pnum;
@@ -158,14 +165,14 @@ static void init_canaries(void)
 									\
 		*start_canary = START_CANARY_VALUE;			\
 		*end_canary = END_CANARY_VALUE;				\
-		DMSG("#Stack canaries for %s[%zu] with top at %p\n",	\
+		DMSG("#Stack canaries for %s[%zu] with top at %p",	\
 			#name, n, (void *)(end_canary - 1));		\
-		DMSG("watch *%p\n", (void *)end_canary);		\
+		DMSG("watch *%p", (void *)end_canary);			\
 	}
 
 	INIT_CANARY(stack_tmp);
 	INIT_CANARY(stack_abt);
-#ifndef CFG_WITH_PAGER
+#if !defined(CFG_WITH_PAGER) && !defined(CFG_VIRTUALIZATION)
 	INIT_CANARY(stack_thread);
 #endif
 #endif/*CFG_WITH_STACK_CANARIES*/
@@ -196,7 +203,7 @@ void thread_check_canaries(void)
 			CANARY_DIED(stack_abt, end, n);
 
 	}
-#ifndef CFG_WITH_PAGER
+#if !defined(CFG_WITH_PAGER) && !defined(CFG_VIRTUALIZATION)
 	for (n = 0; n < ARRAY_SIZE(stack_thread); n++) {
 		if (GET_START_CANARY(stack_thread, n) != START_CANARY_VALUE)
 			CANARY_DIED(stack_thread, start, n);
@@ -388,17 +395,8 @@ static void init_regs(struct thread_ctx *thread,
 void thread_init_boot_thread(void)
 {
 	struct thread_core_local *l = thread_get_core_local();
-	size_t n;
 
-	mutex_lockdep_init();
-
-	for (n = 0; n < CFG_NUM_THREADS; n++) {
-		TAILQ_INIT(&threads[n].tsd.sess_stack);
-		SLIST_INIT(&threads[n].tsd.pgt_cache);
-	}
-
-	for (n = 0; n < CFG_TEE_CORE_NB_CORE; n++)
-		thread_core_local[n].curr_thread = -1;
+	thread_init_threads();
 
 	l->curr_thread = 0;
 	threads[0].state = THREAD_STATE_ACTIVE;
@@ -557,8 +555,22 @@ static void thread_resume_from_rpc(struct thread_smc_args *args)
 void thread_handle_fast_smc(struct thread_smc_args *args)
 {
 	thread_check_canaries();
+
+#ifdef CFG_VIRTUALIZATION
+	if (!virt_set_guest(args->a7)) {
+		args->a0 = OPTEE_SMC_RETURN_ENOTAVAIL;
+		goto out;
+	}
+#endif
+
 	thread_fast_smc_handler_ptr(args);
+
+#ifdef CFG_VIRTUALIZATION
+	virt_unset_guest();
+#endif
 	/* Fast handlers must not unmask any exceptions */
+out:
+	__maybe_unused;
 	assert(thread_get_exceptions() == THREAD_EXCP_ALL);
 }
 
@@ -566,10 +578,22 @@ void thread_handle_std_smc(struct thread_smc_args *args)
 {
 	thread_check_canaries();
 
+#ifdef CFG_VIRTUALIZATION
+	if (!virt_set_guest(args->a7)) {
+		args->a0 = OPTEE_SMC_RETURN_ENOTAVAIL;
+		return;
+	}
+#endif
+
 	if (args->a0 == OPTEE_SMC_CALL_RETURN_FROM_RPC)
 		thread_resume_from_rpc(args);
 	else
 		thread_alloc_and_run(args);
+
+#ifdef CFG_VIRTUALIZATION
+	virt_unset_guest();
+#endif
+
 }
 
 /**
@@ -597,6 +621,9 @@ static void thread_rpc_free_arg(uint64_t cookie)
  */
 void __weak __thread_std_smc_entry(struct thread_smc_args *args)
 {
+#ifdef CFG_VIRTUALIZATION
+	virt_on_stdcall();
+#endif
 	thread_std_smc_handler_ptr(args);
 
 	if (args->a0 == OPTEE_SMC_RETURN_OK) {
@@ -695,6 +722,9 @@ void thread_state_free(void)
 	threads[ct].flags = 0;
 	l->curr_thread = -1;
 
+#ifdef CFG_VIRTUALIZATION
+	virt_unset_guest();
+#endif
 	unlock_global();
 }
 
@@ -758,6 +788,10 @@ int thread_state_suspend(uint32_t flags, uint32_t cpsr, vaddr_t pc)
 	}
 
 	l->curr_thread = -1;
+
+#ifdef CFG_VIRTUALIZATION
+	virt_unset_guest();
+#endif
 
 	unlock_global();
 
@@ -842,14 +876,16 @@ static void init_handlers(const struct thread_handlers *handlers)
 #ifdef CFG_WITH_PAGER
 static void init_thread_stacks(void)
 {
-	size_t n;
+	size_t n = 0;
 
 	/*
 	 * Allocate virtual memory for thread stacks.
 	 */
 	for (n = 0; n < CFG_NUM_THREADS; n++) {
-		tee_mm_entry_t *mm;
-		vaddr_t sp;
+		tee_mm_entry_t *mm = NULL;
+		vaddr_t sp = 0;
+		size_t num_pages = 0;
+		struct fobj *fobj = NULL;
 
 		/* Find vmem for thread stack and its protection gap */
 		mm = tee_mm_alloc(&tee_mm_vcore,
@@ -860,11 +896,13 @@ static void init_thread_stacks(void)
 		tee_pager_add_pages(tee_mm_get_smem(mm), tee_mm_get_size(mm),
 				    true);
 
+		num_pages = tee_mm_get_bytes(mm) / SMALL_PAGE_SIZE - 1;
+		fobj = fobj_locked_paged_alloc(num_pages);
+
 		/* Add the area to the pager */
 		tee_pager_add_core_area(tee_mm_get_smem(mm) + SMALL_PAGE_SIZE,
-					tee_mm_get_bytes(mm) - SMALL_PAGE_SIZE,
-					TEE_MATTR_PRW | TEE_MATTR_LOCKED,
-					NULL, NULL);
+					PAGER_AREA_TYPE_LOCK, fobj);
+		fobj_put(fobj);
 
 		/* init effective stack */
 		sp = tee_mm_get_smem(mm) + tee_mm_get_bytes(mm);
@@ -911,15 +949,30 @@ static void init_user_kcode(void)
 #endif /*CFG_CORE_UNMAP_CORE_AT_EL0*/
 }
 
+void thread_init_threads(void)
+{
+	size_t n;
+
+	init_thread_stacks();
+	pgt_init();
+
+	mutex_lockdep_init();
+
+	for (n = 0; n < CFG_NUM_THREADS; n++) {
+		TAILQ_INIT(&threads[n].tsd.sess_stack);
+		SLIST_INIT(&threads[n].tsd.pgt_cache);
+	}
+
+	for (n = 0; n < CFG_TEE_CORE_NB_CORE; n++)
+		thread_core_local[n].curr_thread = -1;
+}
+
 void thread_init_primary(const struct thread_handlers *handlers)
 {
 	init_handlers(handlers);
 
 	/* Initialize canaries around the stacks */
 	init_canaries();
-
-	init_thread_stacks();
-	pgt_init();
 
 	init_user_kcode();
 }
@@ -1366,8 +1419,10 @@ static struct mobj *thread_rpc_alloc_arg(size_t size)
 	/* Check if this region is in static shared space */
 	if (core_pbuf_is(CORE_MEM_NSEC_SHM, pa, size))
 		mobj = mobj_shm_alloc(pa, size, co);
+#ifdef CFG_CORE_DYN_SHM
 	else if ((!(pa & SMALL_PAGE_MASK)) && size <= SMALL_PAGE_SIZE)
 		mobj = mobj_mapped_shm_alloc(&pa, 1, 0, co);
+#endif
 
 	if (!mobj)
 		goto err;
@@ -1571,25 +1626,32 @@ static void thread_rpc_free(unsigned int bt, uint64_t cookie, struct mobj *mobj)
 }
 
 static struct mobj *get_rpc_alloc_res(struct optee_msg_arg *arg,
-				      unsigned int bt)
+				      unsigned int bt, size_t size)
 {
 	struct mobj *mobj = NULL;
 	uint64_t cookie = 0;
+	size_t psize = 0;
+	uint64_t attr = 0;
 
 	if (arg->ret || arg->num_params != 1)
 		return NULL;
 
-	if (arg->params[0].attr == OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT) {
+	psize = READ_ONCE(arg->params[0].u.tmem.size);
+	if (psize < size)
+		return NULL;
+
+	attr = READ_ONCE(arg->params[0].attr);
+	if (attr == OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT) {
 		cookie = arg->params[0].u.tmem.shm_ref;
 		mobj = mobj_shm_alloc(arg->params[0].u.tmem.buf_ptr,
-				      arg->params[0].u.tmem.size,
+				      psize,
 				      cookie);
-	} else if (arg->params[0].attr == (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
-					   OPTEE_MSG_ATTR_NONCONTIG)) {
+	} else if (attr == (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
+			    OPTEE_MSG_ATTR_NONCONTIG)) {
 		cookie = arg->params[0].u.tmem.shm_ref;
 		mobj = msg_param_mobj_from_noncontig(
 			arg->params[0].u.tmem.buf_ptr,
-			arg->params[0].u.tmem.size,
+			psize,
 			cookie,
 			true);
 	} else {
@@ -1630,7 +1692,7 @@ static struct mobj *thread_rpc_alloc(size_t size, size_t align, unsigned int bt)
 	reg_pair_from_64(carg, rpc_args + 1, rpc_args + 2);
 	thread_rpc(rpc_args);
 
-	return get_rpc_alloc_res(arg, bt);
+	return get_rpc_alloc_res(arg, bt, size);
 }
 
 struct mobj *thread_rpc_alloc_payload(size_t size)

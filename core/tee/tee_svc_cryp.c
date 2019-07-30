@@ -8,6 +8,7 @@
 #include <crypto/crypto.h>
 #include <kernel/tee_ta_manager.h>
 #include <mm/tee_mmu.h>
+#include <stdlib_ext.h>
 #include <string_ext.h>
 #include <string.h>
 #include <sys/queue.h>
@@ -1332,11 +1333,14 @@ static TEE_Result copy_in_attrs(struct user_ta_ctx *utc,
 {
 	TEE_Result res;
 	uint32_t n;
+	size_t size = 0;
+
+	if (MUL_OVERFLOW(sizeof(struct utee_attribute), attr_count, &size))
+		return TEE_ERROR_OVERFLOW;
 
 	res = tee_mmu_check_access_rights(utc,
 			TEE_MEMORY_ACCESS_READ | TEE_MEMORY_ACCESS_ANY_OWNER,
-			(uaddr_t)usr_attrs,
-			attr_count * sizeof(struct utee_attribute));
+			(uaddr_t)usr_attrs, size);
 	if (res != TEE_SUCCESS)
 		return res;
 
@@ -1594,7 +1598,7 @@ TEE_Result syscall_cryp_obj_populate(unsigned long obj,
 		o->info.handleFlags |= TEE_HANDLE_FLAG_INITIALIZED;
 
 out:
-	free(attrs);
+	free_wipe(attrs);
 	return res;
 }
 
@@ -1871,7 +1875,7 @@ TEE_Result syscall_obj_generate_key(unsigned long obj, unsigned long key_size,
 	}
 
 out:
-	free(params);
+	free_wipe(params);
 	if (res == TEE_SUCCESS) {
 		o->info.keySize = key_size;
 		o->info.handleFlags |= TEE_HANDLE_FLAG_INITIALIZED;
@@ -2913,7 +2917,7 @@ TEE_Result syscall_cryp_derive_key(unsigned long state,
 		res = TEE_ERROR_NOT_SUPPORTED;
 
 out:
-	free(params);
+	free_wipe(params);
 	return res;
 }
 
@@ -2951,6 +2955,13 @@ TEE_Result syscall_authenc_init(unsigned long state, const void *nonce,
 	struct tee_cryp_obj_secret *key;
 
 	res = tee_ta_get_current_session(&sess);
+	if (res != TEE_SUCCESS)
+		return res;
+
+	res = tee_mmu_check_access_rights(to_user_ta_ctx(sess->ctx),
+					  TEE_MEMORY_ACCESS_READ |
+					  TEE_MEMORY_ACCESS_ANY_OWNER,
+					  (uaddr_t)nonce, nonce_len);
 	if (res != TEE_SUCCESS)
 		return res;
 
@@ -3392,7 +3403,7 @@ TEE_Result syscall_asymm_operate(unsigned long state,
 	}
 
 out:
-	free(params);
+	free_wipe(params);
 
 	if (res == TEE_SUCCESS || res == TEE_ERROR_SHORT_BUFFER) {
 		TEE_Result res2 = put_user_u64(dst_len, dlen);
@@ -3513,6 +3524,6 @@ TEE_Result syscall_asymm_verify(unsigned long state,
 	}
 
 out:
-	free(params);
+	free_wipe(params);
 	return res;
 }

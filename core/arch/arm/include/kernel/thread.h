@@ -63,15 +63,6 @@ struct thread_vector_table {
 };
 extern struct thread_vector_table thread_vector_table;
 
-struct thread_specific_data {
-	TAILQ_HEAD(, tee_ta_session) sess_stack;
-	struct tee_ta_ctx *ctx;
-	struct pgt_cache pgt_cache;
-	void *rpc_fs_payload;
-	struct mobj *rpc_fs_payload_mobj;
-	size_t rpc_fs_payload_size;
-};
-
 struct thread_user_vfp_state {
 	struct vfp_state vfp;
 	bool lazy_saved;
@@ -202,6 +193,22 @@ struct thread_svc_regs {
 	uint64_t pad;
 } __aligned(16);
 #endif /*ARM64*/
+
+struct thread_specific_data {
+	TAILQ_HEAD(, tee_ta_session) sess_stack;
+	struct tee_ta_ctx *ctx;
+	struct pgt_cache pgt_cache;
+	void *rpc_fs_payload;
+	struct mobj *rpc_fs_payload_mobj;
+	size_t rpc_fs_payload_size;
+
+	uint32_t abort_type;
+	uint32_t abort_descr;
+	vaddr_t abort_va;
+	unsigned int abort_core;
+	struct thread_abort_regs abort_regs;
+};
+
 #endif /*ASM*/
 
 #ifndef ASM
@@ -265,6 +272,13 @@ struct thread_core_local *thread_get_core_local(void);
  * Returns true on success and false on errors.
  */
 bool thread_init_stack(uint32_t stack_id, vaddr_t sp);
+
+/*
+ * Initializes thread contexts. Called in thread_init_boot_thread() if
+ * virtualization is disabled. Virtualization subsystem calls it for
+ * every new guest otherwise.
+ */
+void thread_init_threads(void);
 
 /*
  * Initializes a thread to be used during boot

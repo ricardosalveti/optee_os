@@ -9,6 +9,15 @@
 #include <types_ext.h>
 
 /*
+ * Memory pool for large temporary memory allocations that must not fail.
+ * With the first allocation from an unused (idle or free) pool the pool
+ * becomes reserved for that particular thread, until all allocations are
+ * freed again. In order to avoid dead-lock and ease code review it is good
+ * practise to free everything allocated by a certain function before
+ * returning.
+ */
+
+/*
  * struct mempool_item - internal struct to keep track of an item
  */
 struct mempool_item {
@@ -19,9 +28,19 @@ struct mempool_item {
 
 struct mempool;
 
+#define MEMPOOL_ALIGN	__alignof__(long)
+
+#if defined(__KERNEL__)
+/*
+ * System wide memory pool for large temporary memory allocation.
+ */
+extern struct mempool *mempool_default;
+#endif
+
 /*
  * mempool_alloc_pool() - Allocate a new memory pool
- * @data:		a block of memory to carve out items from
+ * @data:		a block of memory to carve out items from, must
+ *			have an alignment of MEMPOOL_ALIGN.
  * @size:		size fo the block of memory
  * @release_mem:	function to call when the pool has been emptied,
  *			ignored if NULL.

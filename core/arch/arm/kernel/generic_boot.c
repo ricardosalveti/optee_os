@@ -20,6 +20,7 @@
 #include <malloc.h>
 #include <mm/core_memprot.h>
 #include <mm/core_mmu.h>
+#include <mm/fobj.h>
 #include <mm/tee_mm.h>
 #include <mm/tee_mmu.h>
 #include <mm/tee_pager.h>
@@ -79,7 +80,7 @@ struct dt_descriptor {
 	int frag_id;
 };
 
-static struct dt_descriptor external_dt;
+static struct dt_descriptor external_dt __nex_bss;
 #endif
 
 #ifdef CFG_SECONDARY_INIT_CNTFRQ
@@ -331,12 +332,16 @@ static void init_runtime(unsigned long pageable_part)
 {
 	size_t n;
 	size_t init_size = (size_t)__init_size;
-	size_t pageable_size = __pageable_end - __pageable_start;
+	size_t pageable_start = (size_t)__pageable_start;
+	size_t pageable_end = (size_t)__pageable_end;
+	size_t pageable_size = pageable_end - pageable_start;
+	size_t tzsram_end = TZSRAM_BASE + TZSRAM_SIZE;
 	size_t hash_size = (pageable_size / SMALL_PAGE_SIZE) *
 			   TEE_SHA256_HASH_SIZE;
-	tee_mm_entry_t *mm;
-	uint8_t *paged_store;
-	uint8_t *hashes;
+	tee_mm_entry_t *mm = NULL;
+	struct fobj *fobj = NULL;
+	uint8_t *paged_store = NULL;
+	uint8_t *hashes = NULL;
 
 	assert(pageable_size % SMALL_PAGE_SIZE == 0);
 	assert(hash_size == (size_t)__tmp_hashes_size);
@@ -346,8 +351,6 @@ static void init_runtime(unsigned long pageable_part)
 	 * in MEM_AREA_TEE_RAM
 	 */
 	tee_pager_early_init();
-
-	thread_init_boot_thread();
 
 	init_asan();
 
@@ -437,13 +440,19 @@ static void init_runtime(unsigned long pageable_part)
 	mm = tee_mm_alloc2(&tee_mm_vcore, (vaddr_t)__pageable_start,
 			   pageable_size);
 	assert(mm);
-	tee_pager_add_core_area(tee_mm_get_smem(mm), tee_mm_get_bytes(mm),
-				TEE_MATTR_PRX, paged_store, hashes);
+	fobj = fobj_ro_paged_alloc(tee_mm_get_bytes(mm) / SMALL_PAGE_SIZE,
+				   hashes, paged_store);
+	assert(fobj);
+	tee_pager_add_core_area(tee_mm_get_smem(mm), PAGER_AREA_TYPE_RO, fobj);
+	fobj_put(fobj);
 
-	tee_pager_add_pages((vaddr_t)__pageable_start,
-			init_size / SMALL_PAGE_SIZE, false);
-	tee_pager_add_pages((vaddr_t)__pageable_start + init_size,
-			(pageable_size - init_size) / SMALL_PAGE_SIZE, true);
+	tee_pager_add_pages(pageable_start, init_size / SMALL_PAGE_SIZE, false);
+	tee_pager_add_pages(pageable_start + init_size,
+			    (pageable_size - init_size) / SMALL_PAGE_SIZE,
+			    true);
+	if (pageable_end < tzsram_end)
+		tee_pager_add_pages(pageable_end, (tzsram_end - pageable_end) /
+						   SMALL_PAGE_SIZE, true);
 
 	/*
 	 * There may be physical pages in TZSRAM before the core load address.
@@ -461,16 +470,22 @@ static void init_runtime(unsigned long pageable_part)
 
 static void init_runtime(unsigned long pageable_part __unused)
 {
-	thread_init_boot_thread();
-
 	init_asan();
-	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
 
 	/*
-	 * Initialized at this stage in the pager version of this function
-	 * above
+	 * By default whole OP-TEE uses malloc, so we need to initialize
+	 * it early. But, when virtualization is enabled, malloc is used
+	 * only by TEE runtime, so malloc should be initialized later, for
+	 * every virtual partition separately. Core code uses nex_malloc
+	 * instead.
 	 */
-	teecore_init_ta_ram();
+#ifdef CFG_VIRTUALIZATION
+	nex_malloc_add_pool(__nex_heap_start, __nex_heap_end -
+					      __nex_heap_start);
+#else
+	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
+#endif
+
 	IMSG_RAW("\n");
 }
 #endif
@@ -493,6 +508,8 @@ void *get_embedded_dt(void)
 	assert(cpu_mmu_enabled());
 
 	if (!checked) {
+		IMSG("Embedded DTB found");
+
 		if (fdt_check_header(embedded_secure_dtb))
 			panic("Invalid embedded DTB");
 
@@ -596,7 +613,7 @@ static int add_optee_dt_node(struct dt_descriptor *dt)
 	int ret;
 
 	if (fdt_path_offset(dt->blob, "/firmware/optee") >= 0) {
-		DMSG("OP-TEE Device Tree node already exists!\n");
+		DMSG("OP-TEE Device Tree node already exists!");
 		return 0;
 	}
 
@@ -632,7 +649,7 @@ static int dt_add_psci_node(struct dt_descriptor *dt)
 	int offs;
 
 	if (fdt_path_offset(dt->blob, "/psci") >= 0) {
-		DMSG("PSCI Device Tree node already exists!\n");
+		DMSG("PSCI Device Tree node already exists!");
 		return 0;
 	}
 
@@ -730,46 +747,31 @@ static void set_dt_val(void *data, uint32_t cell_size, uint64_t val)
 	}
 }
 
-static uint64_t get_dt_val_and_advance(const void *data, size_t *offs,
-				       uint32_t cell_size)
-{
-	uint64_t rv;
-
-	if (cell_size == 1) {
-		uint32_t v;
-
-		memcpy(&v, (const uint8_t *)data + *offs, sizeof(v));
-		*offs += sizeof(v);
-		rv = fdt32_to_cpu(v);
-	} else {
-		uint64_t v;
-
-		memcpy(&v, (const uint8_t *)data + *offs, sizeof(v));
-		*offs += sizeof(v);
-		rv = fdt64_to_cpu(v);
-	}
-
-	return rv;
-}
-
 static int add_res_mem_dt_node(struct dt_descriptor *dt, const char *name,
 			       paddr_t pa, size_t size)
 {
-	int offs;
-	int ret;
-	int addr_size = 2;
-	int len_size = 2;
-	char subnode_name[80];
+	int offs = 0;
+	int ret = 0;
+	int addr_size = -1;
+	int len_size = -1;
+	bool found = true;
+	char subnode_name[80] = { 0 };
 
 	offs = fdt_path_offset(dt->blob, "/reserved-memory");
-	if (offs >= 0) {
-		addr_size = fdt_address_cells(dt->blob, offs);
-		if (addr_size < 0)
-			return -1;
-		len_size = fdt_size_cells(dt->blob, offs);
-		if (len_size < 0)
-			return -1;
-	} else {
+
+	if (offs < 0) {
+		found = false;
+		offs = 0;
+	}
+
+	len_size = fdt_size_cells(dt->blob, offs);
+	if (len_size < 0)
+		return -1;
+	addr_size = fdt_address_cells(dt->blob, offs);
+	if (addr_size < 0)
+		return -1;
+
+	if (!found) {
 		offs = add_dt_path_subnode(dt, "/", "reserved-memory");
 		if (offs < 0)
 			return -1;
@@ -806,16 +808,39 @@ static int add_res_mem_dt_node(struct dt_descriptor *dt, const char *name,
 	return 0;
 }
 
+#ifdef CFG_CORE_DYN_SHM
+static uint64_t get_dt_val_and_advance(const void *data, size_t *offs,
+				       uint32_t cell_size)
+{
+	uint64_t rv = 0;
+
+	if (cell_size == 1) {
+		uint32_t v;
+
+		memcpy(&v, (const uint8_t *)data + *offs, sizeof(v));
+		*offs += sizeof(v);
+		rv = fdt32_to_cpu(v);
+	} else {
+		uint64_t v;
+
+		memcpy(&v, (const uint8_t *)data + *offs, sizeof(v));
+		*offs += sizeof(v);
+		rv = fdt64_to_cpu(v);
+	}
+
+	return rv;
+}
+
 static struct core_mmu_phys_mem *get_memory(void *fdt, size_t *nelems)
 {
-	int offs;
-	int addr_size;
-	int len_size;
-	size_t prop_len;
-	const uint8_t *prop;
-	size_t prop_offs;
-	size_t n;
-	struct core_mmu_phys_mem *mem;
+	int offs = 0;
+	int addr_size = 0;
+	int len_size = 0;
+	size_t prop_len = 0;
+	const uint8_t *prop = NULL;
+	size_t prop_offs = 0;
+	size_t n = 0;
+	struct core_mmu_phys_mem *mem = NULL;
 
 	offs = fdt_subnode_offset(fdt, 0, "memory");
 	if (offs < 0)
@@ -847,7 +872,7 @@ static struct core_mmu_phys_mem *get_memory(void *fdt, size_t *nelems)
 		return NULL;
 
 	*nelems = n;
-	mem = calloc(n, sizeof(*mem));
+	mem = nex_calloc(n, sizeof(*mem));
 	if (!mem)
 		panic();
 
@@ -861,7 +886,9 @@ static struct core_mmu_phys_mem *get_memory(void *fdt, size_t *nelems)
 
 	return mem;
 }
+#endif /*CFG_CORE_DYN_SHM*/
 
+#ifdef CFG_CORE_RESERVED_SHM
 static int mark_static_shm_as_reserved(struct dt_descriptor *dt)
 {
 	vaddr_t shm_start;
@@ -869,13 +896,14 @@ static int mark_static_shm_as_reserved(struct dt_descriptor *dt)
 
 	core_mmu_get_mem_by_type(MEM_AREA_NSEC_SHM, &shm_start, &shm_end);
 	if (shm_start != shm_end)
-		return add_res_mem_dt_node(dt, "optee",
+		return add_res_mem_dt_node(dt, "optee_shm",
 					   virt_to_phys((void *)shm_start),
 					   shm_end - shm_start);
 
 	DMSG("No SHM configured");
 	return -1;
 }
+#endif /*CFG_CORE_RESERVED_SHM*/
 
 static void init_external_dt(unsigned long phys_dt)
 {
@@ -884,7 +912,6 @@ static void init_external_dt(unsigned long phys_dt)
 	int ret;
 
 	if (!phys_dt) {
-		EMSG("Device Tree missing");
 		/*
 		 * No need to panic as we're not using the DT in OP-TEE
 		 * yet, we're only adding some nodes for normal world use.
@@ -893,6 +920,7 @@ static void init_external_dt(unsigned long phys_dt)
 		 * initialize devices based on DT we'll likely panic
 		 * instead of returning here.
 		 */
+		IMSG("No non-secure external DT");
 		return;
 	}
 
@@ -918,6 +946,14 @@ static void init_external_dt(unsigned long phys_dt)
 		     phys_dt, ret);
 		panic();
 	}
+
+	IMSG("Non-secure external DT found");
+}
+
+static int mark_tzdram_as_reserved(struct dt_descriptor *dt)
+{
+	return add_res_mem_dt_node(dt, "optee_core", CFG_TZDRAM_START,
+				   CFG_TZDRAM_SIZE);
 }
 
 static void update_external_dt(void)
@@ -934,8 +970,13 @@ static void update_external_dt(void)
 	if (config_psci(dt))
 		panic("Failed to config PSCI");
 
+#ifdef CFG_CORE_RESERVED_SHM
 	if (mark_static_shm_as_reserved(dt))
 		panic("Failed to config non-secure memory");
+#endif
+
+	if (mark_tzdram_as_reserved(dt))
+		panic("Failed to config secure memory");
 
 	ret = fdt_pack(dt->blob);
 	if (ret < 0) {
@@ -962,18 +1003,21 @@ static void update_external_dt(void)
 {
 }
 
+#ifdef CFG_CORE_DYN_SHM
 static struct core_mmu_phys_mem *get_memory(void *fdt __unused,
 					    size_t *nelems __unused)
 {
 	return NULL;
 }
+#endif /*CFG_CORE_DYN_SHM*/
 #endif /*!CFG_DT*/
 
+#ifdef CFG_CORE_DYN_SHM
 static void discover_nsec_memory(void)
 {
 	struct core_mmu_phys_mem *mem;
 	size_t nelems;
-	void *fdt = get_dt();
+	void *fdt = get_external_dt();
 
 	if (fdt) {
 		mem = get_memory(fdt, &nelems);
@@ -992,12 +1036,32 @@ static void discover_nsec_memory(void)
 	/* Platform cannot define nsec_ddr && overall_ddr */
 	assert(phys_nsec_ddr_begin == phys_nsec_ddr_end);
 
-	mem = calloc(nelems, sizeof(*mem));
+	mem = nex_calloc(nelems, sizeof(*mem));
 	if (!mem)
 		panic();
 
 	memcpy(mem, phys_ddr_overall_begin, sizeof(*mem) * nelems);
 	core_mmu_set_discovered_nsec_ddr(mem, nelems);
+}
+#else /*CFG_CORE_DYN_SHM*/
+static void discover_nsec_memory(void)
+{
+}
+#endif /*!CFG_CORE_DYN_SHM*/
+
+void init_tee_runtime(void)
+{
+#ifdef CFG_VIRTUALIZATION
+	/* We need to initialize pool for every virtual guest partition */
+	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
+#endif
+
+#ifndef CFG_WITH_PAGER
+	/* Pager initializes TA RAM early */
+	teecore_init_ta_ram();
+#endif
+	if (init_teecore() != TEE_SUCCESS)
+		panic();
 }
 
 static void init_primary_helper(unsigned long pageable_part,
@@ -1015,6 +1079,9 @@ static void init_primary_helper(unsigned long pageable_part,
 	init_vfp_sec();
 	init_runtime(pageable_part);
 
+#ifndef CFG_VIRTUALIZATION
+	thread_init_boot_thread();
+#endif
 	thread_init_primary(generic_boot_get_handlers());
 	thread_init_per_cpu();
 	init_sec_mon(nsec_entry);
@@ -1027,10 +1094,15 @@ static void init_primary_helper(unsigned long pageable_part,
 
 	main_init_gic();
 	init_vfp_nsec();
-	if (init_teecore() != TEE_SUCCESS)
-		panic();
+#ifndef CFG_VIRTUALIZATION
+	init_tee_runtime();
+#endif
 	release_external_dt();
-	DMSG("Primary CPU switching to normal world boot\n");
+#ifdef CFG_VIRTUALIZATION
+	IMSG("Initializing virtualization support");
+	core_mmu_init_virtualization();
+#endif
+	DMSG("Primary CPU switching to normal world boot");
 }
 
 /* What this function is using is needed each time another CPU is started */
@@ -1054,7 +1126,7 @@ static void init_secondary_helper(unsigned long nsec_entry)
 	init_vfp_sec();
 	init_vfp_nsec();
 
-	DMSG("Secondary CPU Switching to normal world boot\n");
+	DMSG("Secondary CPU Switching to normal world boot");
 }
 
 #if defined(CFG_WITH_ARM_TRUSTED_FW)
