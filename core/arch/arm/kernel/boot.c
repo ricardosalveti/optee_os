@@ -1358,6 +1358,7 @@ static void init_primary(unsigned long pageable_part, unsigned long nsec_entry)
  */
 void __weak paged_init_primary(unsigned long fdt)
 {
+	uint32_t sctlr;
 #ifdef CFG_OVERLAY_ADDR
 	struct dt_descriptor *dt = &external_dt;
 	dt->is_overlay = 0;
@@ -1369,6 +1370,21 @@ void __weak paged_init_primary(unsigned long fdt)
 	configure_console_from_dt();
 
 	IMSG("OP-TEE version: %s", core_v_str);
+
+#ifdef ARM32
+        sctlr = read_sctlr();
+#else
+        sctlr = read_sctlr_el1();
+#endif
+	DMSG("RSALVETI: sctlr %x", sctlr);
+	if (sctlr & SCTLR_A)
+		DMSG("RSALVETI: sctlr SCTLR_A is set");
+	else
+		DMSG("RSALVETI: sctlr SCTLR_A is NOT set");
+	if (sctlr & SCTLR_M)
+		DMSG("RSALVETI: sctlr SCTLR_M (MMU) is set");
+	else
+		DMSG("RSALVETI: sctlr SCTLR_M (MMU) is NOT set");
 
 	IMSG("Primary CPU initializing");
 #ifdef CFG_CORE_ASLR

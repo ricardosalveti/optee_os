@@ -507,6 +507,7 @@ static enum fault_type get_fault_type(struct abort_info *ai)
 void abort_handler(uint32_t abort_type, struct thread_abort_regs *regs)
 {
 	struct abort_info ai;
+	uint32_t sctlr;
 	bool handled;
 
 	set_abort_info(abort_type, regs, &ai);
@@ -515,6 +516,20 @@ void abort_handler(uint32_t abort_type, struct thread_abort_regs *regs)
 	case FAULT_TYPE_IGNORE:
 		break;
 	case FAULT_TYPE_USER_MODE_PANIC:
+#ifdef ARM32
+		sctlr = read_sctlr();
+#else
+		sctlr = read_sctlr_el1();
+#endif
+		DMSG("RSALVETI: sctlr %x", sctlr);
+		if (sctlr & SCTLR_A)
+			DMSG("RSALVETI: sctlr SCTLR_A is set");
+		else
+			DMSG("RSALVETI: sctlr SCTLR_A is NOT set");
+		if (sctlr & SCTLR_M)
+			DMSG("RSALVETI: sctlr SCTLR_M (MMU) is set");
+		else
+			DMSG("RSALVETI: sctlr SCTLR_M (MMU) is NOT set");
 		DMSG("[abort] abort in User mode (TA will panic)");
 		save_abort_info_in_tsd(&ai);
 		vfp_disable();
