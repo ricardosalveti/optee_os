@@ -985,6 +985,7 @@ static struct core_mmu_phys_mem *get_memory(void *fdt, size_t *nelems)
 						     addr_size);
 		mem[n].size = get_dt_val_and_advance(prop, &prop_offs,
 						     len_size);
+		IMSG("RSALVETI: mem type NSEC, addr %lx, size %lx", mem[n].addr, mem[n].size);
 	}
 
 	return mem;
