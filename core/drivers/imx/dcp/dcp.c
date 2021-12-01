@@ -686,11 +686,15 @@ static TEE_Result dcp_pbase(paddr_t *base)
 	int node = -1;
 	unsigned int i = 0;
 
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
+
 	fdt = get_dt();
 	if (!fdt) {
 		EMSG("DTB no present");
 		return TEE_ERROR_ITEM_NOT_FOUND;
 	}
+
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
 
 	for (i = 0; i < ARRAY_SIZE(dt_ctrl_match_table); i++) {
 		node = fdt_node_offset_by_compatible(fdt, 0,
@@ -719,6 +723,8 @@ static TEE_Result dcp_pbase(paddr_t *base)
 		return TEE_ERROR_ITEM_NOT_FOUND;
 	}
 
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
+
 	return TEE_SUCCESS;
 }
 #endif /* CFG_DT */
@@ -728,8 +734,12 @@ TEE_Result dcp_init(void)
 	TEE_Result ret = TEE_ERROR_GENERIC;
 	paddr_t pbase = 0;
 
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
+
 	if (driver_initialized)
 		return TEE_SUCCESS;
+
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
 
 	dcp_clk_enable(true);
 
@@ -737,11 +747,15 @@ TEE_Result dcp_init(void)
 	if (ret != TEE_SUCCESS)
 		pbase = DCP_BASE;
 
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
+
 	dcp_base = core_mmu_get_va(pbase, MEM_AREA_IO_SEC);
 	if (!dcp_base) {
 		EMSG("Unable to get DCP physical address");
 		return TEE_ERROR_ITEM_NOT_FOUND;
 	}
+
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
 
 	/* Context switching buffer memory allocation */
 	ret = dcp_calloc_align_buf(&hw_context_buffer, DCP_CONTEXT_BUFFER_SIZE);
@@ -749,6 +763,8 @@ TEE_Result dcp_init(void)
 		EMSG("hw_context_buffer allocation failed");
 		return ret;
 	}
+
+	EMSG("RSALVETI: %s:%d", __FUNCTION__, __LINE__);
 
 	/*
 	 * Initialize control register.

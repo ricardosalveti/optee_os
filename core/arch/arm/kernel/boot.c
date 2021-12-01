@@ -1022,6 +1022,8 @@ static void init_external_dt(unsigned long phys_dt)
 	void *fdt;
 	int ret;
 
+	EMSG("RSALVETI: Device Tree at %#lx, overlay: %d", phys_dt, dt->is_overlay);
+
 	if (!phys_dt) {
 		/*
 		 * No need to panic as we're not using the DT in OP-TEE
