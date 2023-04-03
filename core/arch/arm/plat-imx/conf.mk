@@ -551,10 +551,6 @@ CFG_IMX_SC ?= y
 CFG_IMX_MU ?= y
 endif
 
-# If NXP CAAM Driver is supported, the Crypto Driver interfacing
-# it with generic crypto API can be enabled.
-CFG_CRYPTO_DRIVER ?= y
-
 # Enable DEK Blob feature by default on i.MX 8mscale family.
 ifeq ($(CFG_MX8M),y)
 CFG_IMX_DEK_HAB ?=y
