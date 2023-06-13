@@ -125,6 +125,17 @@ int ti_sci_get_dkek(uint8_t sa2ul_instance,
 		    uint8_t dkek[SA2UL_DKEK_KEY_LEN]);
 
 /**
+ * ti_sci_get_swrev - Read Software Revision
+ * @swrev:	Software Revision
+ *
+ * Reads the software revision. The System Firmware currently supports reading
+ * only the software revision from the Secure Board Configuration.
+ *
+ * Return: 0 if all goes well, else appropriate error message
+ */
+int ti_sci_get_swrev(uint32_t *swrev);
+
+/**
  * ti_sci_init() - Basic initialization
  *
  * Return: 0 if all goes well, else appropriate error message

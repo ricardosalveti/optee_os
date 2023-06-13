@@ -364,6 +364,29 @@ int ti_sci_get_dkek(uint8_t sa2ul_instance,
 	return 0;
 }
 
+int ti_sci_get_swrev(uint32_t *swrev)
+{
+	struct ti_sci_msq_req_get_swrev req = { };
+	struct ti_sci_msq_resp_get_swrev resp = { };
+	struct ti_sci_xfer xfer = { };
+	int ret = 0;
+
+	ret = ti_sci_setup_xfer(TI_SCI_MSG_READ_SWREV, 0,
+				&req, sizeof(req), &resp, sizeof(resp), &xfer);
+	if (ret)
+		return ret;
+
+	req.identifier = OTP_REV_ID_SEC_BRDCFG;
+
+	ret = ti_sci_do_xfer(&xfer);
+	if (ret)
+		return ret;
+
+	*swrev = resp.swrev;
+	memzero_explicit(&resp, sizeof(resp));
+	return 0;
+}
+
 /**
  * ti_sci_init() - Basic initialization
  *
