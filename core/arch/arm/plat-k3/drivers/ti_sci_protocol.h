@@ -24,6 +24,12 @@
 #define TI_SCI_MSG_FWL_CHANGE_OWNER      0x9002
 #define TI_SCI_MSG_SA2UL_GET_DKEK        0x9029
 
+/* OTP Revision Read/Write Message Description */
+#define TI_SCI_MSG_WRITE_SWREV           0x9032
+#define TI_SCI_MSG_READ_SWREV            0x9033
+#define TI_SCI_MSG_READ_KEYCNT_KEYREV    0x9034
+#define TI_SCI_MSG_WRITE_KEYREV          0x9035
+
 /**
  * struct ti_sci_secure_msg_hdr - Secure Message Header for All messages
  *				 and responses
